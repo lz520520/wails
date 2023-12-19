@@ -65,7 +65,7 @@ func CreateApp(appoptions *options.App) (*App, error) {
 
 	devServer := os.Getenv("devserver")
 	if devServer == "" {
-		devServerFlag = devFlags.String("devserver", "", "Address to bind the wails dev server to")
+		devServerFlag = devFlags.String("devserver", "0.0.0.0:34115", "Address to bind the wails dev server to")
 	}
 
 	frontendDevServerURL := os.Getenv("frontenddevserverurl")

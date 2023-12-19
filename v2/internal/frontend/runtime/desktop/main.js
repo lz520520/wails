@@ -9,7 +9,16 @@ The electron alternative for Go
 */
 /* jshint esversion: 9 */
 import * as Log from './log';
-import {eventListeners, EventsEmit, EventsNotify, EventsOff, EventsOn, EventsOnce, EventsOnMultiple} from './events';
+import {
+    eventListeners,
+    EventsEmit,
+    EventsNotify,
+    EventsOff,
+    EventsOffAll,
+    EventsOn,
+    EventsOnce,
+    EventsOnMultiple
+} from './events';
 import {Call, Callback, callbacks} from './calls';
 import {SetBindings} from "./bindings";
 import * as Window from "./window";
@@ -47,6 +56,7 @@ window.runtime = {
     EventsOnMultiple,
     EventsEmit,
     EventsOff,
+    EventsOffAll,
     Environment,
     Show,
     Hide,
