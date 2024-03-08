@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/acarl005/stripansi"
@@ -48,11 +49,15 @@ func (s *stdoutScanner) Write(data []byte) (n int, err error) {
 		sc := bufio.NewScanner(strings.NewReader(input))
 		for sc.Scan() {
 			line := sc.Text()
-			index := strings.Index(line, "Local:")
-			if index == -1 || len(line) < 7 {
+			//index := strings.Index(line, "Local:")
+			//if index == -1 || len(line) < 7 {
+			//	continue
+			//}
+			tmp := regexp.MustCompile(`Local:\s+(http.*?)($|\s)`).FindStringSubmatch(line)
+			if len(tmp) == 0 {
 				continue
 			}
-			viteServerURL := strings.TrimSpace(line[index+6:])
+			viteServerURL := tmp[1]
 			logutils.LogGreen("Vite Server URL: %s", viteServerURL)
 			_, err := url.Parse(viteServerURL)
 			if err != nil {

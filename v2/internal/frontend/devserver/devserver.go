@@ -6,6 +6,7 @@
 package devserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -177,24 +178,42 @@ func (d *DevWebServer) handleIPCWebSocket(c echo.Context) error {
 			d.LogDebug(fmt.Sprintf("Websocket client %p disconnected", c))
 		}()
 
-		var msg string
 		defer c.Close()
 		for {
+			var fullMsg []byte
+			var msg []byte
 			if err := websocket.Message.Receive(c, &msg); err != nil {
 				break
 			}
+			buffer := bytes.Buffer{}
+			buffer.Write(msg)
+			// 修复websocket分帧导致数据不完整
+			if bytes.HasPrefix(msg, []byte(`C{"`)) {
+				for {
+					if bytes.HasSuffix(msg, []byte(`"}`)) {
+						break
+					}
+					msg = make([]byte, 0)
+					if err := websocket.Message.Receive(c, &msg); err != nil {
+						return
+					}
+					buffer.Write(msg)
+				}
+			}
+			fullMsg = buffer.Bytes()
+			buffer.Reset()
 			// We do not support drag in browsers
-			if msg == "drag" {
+			if len(fullMsg) == 4 && string(fullMsg) == "drag" {
 				continue
 			}
 
 			// Notify the other browsers of "EventEmit"
-			if len(msg) > 2 && strings.HasPrefix(string(msg), "EE") {
-				d.notifyExcludingSender([]byte(msg), c)
+			if len(fullMsg) > 2 && strings.HasPrefix(string(fullMsg), "EE") {
+				d.notifyExcludingSender([]byte(fullMsg), c)
 			}
 
 			// Send the message to dispatch to the frontend
-			result, err := d.dispatcher.ProcessMessage(string(msg), d)
+			result, err := d.dispatcher.ProcessMessage(string(fullMsg), d)
 			if err != nil {
 				d.logger.Error(err.Error())
 			}

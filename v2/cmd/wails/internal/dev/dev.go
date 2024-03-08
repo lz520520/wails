@@ -223,7 +223,7 @@ func runFrontendDevWatcherCommand(frontendDirectory string, devCommand string, d
 		select {
 		case serverURL := <-scanner.ViteServerURLChan:
 			viteServerURL = serverURL
-		case <-time.After(time.Second * 10):
+		case <-time.After(time.Second * 20):
 			cancel()
 			return nil, "", "", errors.New("failed to find Vite server URL")
 		}
