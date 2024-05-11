@@ -2,4 +2,4 @@
 
 all:
 	go build -ldflags "-s -w" ./cmd/wails/
-	mv wails $GOPATH/bin
+	mv wails $$GOPATH/bin
