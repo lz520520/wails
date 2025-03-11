@@ -58,6 +58,7 @@ export function EventsOnMultiple(eventName, callback, maxCallbacks) {
     eventListeners[eventName] = eventListeners[eventName] || [];
     const thisListener = new Listener(eventName, callback, maxCallbacks);
     eventListeners[eventName].push(thisListener);
+    window.WailsInvoke("EB" + eventName);
     return () => listenerOff(thisListener);
 }
 
