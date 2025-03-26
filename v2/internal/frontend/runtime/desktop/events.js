@@ -62,6 +62,13 @@ export function EventsOnMultiple(eventName, callback, maxCallbacks) {
     return () => listenerOff(thisListener);
 }
 
+
+
+export function EventsRebind() {
+    for (let key in eventListeners) {
+        window.WailsInvoke("EB" + key);
+    }
+}
 /**
  * Registers an event listener that will be invoked every time the event is emitted
  *

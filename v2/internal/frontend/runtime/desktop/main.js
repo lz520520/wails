@@ -17,7 +17,8 @@ import {
     EventsOffAll,
     EventsOn,
     EventsOnce,
-    EventsOnMultiple
+    EventsOnMultiple,
+    EventsRebind,
 } from './events';
 import {Call, Callback, callbacks} from './calls';
 import {SetBindings} from "./bindings";
@@ -61,7 +62,8 @@ window.runtime = {
     Environment,
     Show,
     Hide,
-    Quit
+    Quit,
+    EventsRebind,
 };
 
 // Internal wails endpoints

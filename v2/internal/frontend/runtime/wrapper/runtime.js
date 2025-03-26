@@ -35,7 +35,9 @@ export function LogError(message) {
 export function LogFatal(message) {
     window.runtime.LogFatal(message);
 }
-
+export function EventsRebind() {
+    return window.runtime.EventsRebind();
+}
 export function EventsOnMultiple(eventName, callback, maxCallbacks) {
     return window.runtime.EventsOnMultiple(eventName, callback, maxCallbacks);
 }

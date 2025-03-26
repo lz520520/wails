@@ -64,6 +64,7 @@ function setupIPCBridge() {
 function handleConnect() {
     log('Connected to backend');
     hideOverlay();
+    window.runtime.EventsRebind();
     setupIPCBridge();
     clearInterval(connectTimer);
     websocket.onclose = handleDisconnect;
@@ -78,9 +79,13 @@ function handleDisconnect() {
     connect();
 }
 
+let protocol = null;
+let host = null;
+
 function _connect() {
     if (websocket == null) {
-        websocket = new WebSocket((window.location.protocol.startsWith("https") ? "wss://" : "ws://") + window.location.host + "/wails/ipc");
+        get_host();
+        websocket = new WebSocket((protocol.startsWith("https") ? "wss://" : "ws://") + host + "/wails/ipc");
         websocket.onopen = handleConnect;
         websocket.onerror = function (e) {
             e.stopImmediatePropagation();
@@ -89,6 +94,25 @@ function _connect() {
             websocket = null;
             return false;
         };
+    }
+}
+function get_host() {
+    if (host) {
+        return
+    }
+    const currentScript = document.currentScript || (function () {
+        const scripts = document.getElementsByTagName('script');
+        return scripts[scripts.length - 1];
+    })();
+
+    if (currentScript) {
+        const scriptSrc = currentScript.src;
+        const scriptURL = new URL(scriptSrc);
+        host = scriptURL.host; // 获取脚本文件的host
+        protocol = scriptURL.protocol;
+    } else {
+        host = window.location.host;
+        protocol = window.location.protocol;
     }
 }
 

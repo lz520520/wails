@@ -40,6 +40,7 @@ export function EventsEmit(eventName: string, ...data: any): void;
 // [EventsOn](https://wails.io/docs/reference/runtime/events#eventson) sets up a listener for the given event name.
 export function EventsOn(eventName: string, callback: (...data: any) => void): () => void;
 
+export function EventsRebind(): () => void;
 // [EventsOnMultiple](https://wails.io/docs/reference/runtime/events#eventsonmultiple)
 // sets up a listener for the given event name, but will only trigger a given number times.
 export function EventsOnMultiple(eventName: string, callback: (...data: any) => void, maxCallbacks: number): () => void;
