@@ -64,11 +64,11 @@ function setupIPCBridge() {
 function handleConnect() {
     log('Connected to backend');
     hideOverlay();
-    window.runtime.EventsRebind();
     setupIPCBridge();
     clearInterval(connectTimer);
     websocket.onclose = handleDisconnect;
     websocket.onmessage = handleMessage;
+    window.runtime.EventsRebind();
 }
 
 // Handles websocket disconnects
