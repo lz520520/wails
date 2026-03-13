@@ -21,7 +21,7 @@ import (
 
     "github.com/wailsapp/wails/v2/internal/frontend/runtime"
 
-    "golang.org/x/net/websocket"
+    "github.com/gorilla/websocket"
     "github.com/labstack/echo/v4"
     "github.com/wailsapp/wails/v2/internal/binding"
     "github.com/wailsapp/wails/v2/internal/frontend"
@@ -33,13 +33,13 @@ import (
 type Screen = frontend.Screen
 
 var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin:     func(r *http.Request) bool { return true },
+    ReadBufferSize:  1024,
+    WriteBufferSize: 1024,
+    CheckOrigin:     func(r *http.Request) bool { return true },
 }
 
 type WebsocketInfo struct {
-    locker sync.Mutex
+    locker     sync.Mutex
     eventCache sync.Map
 }
 type DevWebServer struct {
@@ -182,7 +182,7 @@ func (d *DevWebServer) handleIPCWebSocket(c echo.Context) error {
 
     d.socketMutex.Lock()
     d.websocketClients[conn] = &WebsocketInfo{}
-    locker := d.websocketClients[conn]
+    info := d.websocketClients[conn]
     d.socketMutex.Unlock()
 
     var wg sync.WaitGroup
@@ -215,7 +215,7 @@ func (d *DevWebServer) handleIPCWebSocket(c echo.Context) error {
                 msg = make([]byte, 0)
                 _, msg, err = conn.ReadMessage()
                 if err != nil {
-                    return 
+                    return err
                 }
                 buffer.Write(msg)
             }
@@ -224,7 +224,6 @@ func (d *DevWebServer) handleIPCWebSocket(c echo.Context) error {
         fullMsg = buffer.Bytes()
         buffer.Reset()
 
-        
         go func(m string) {
             defer wg.Done()
 
@@ -253,8 +252,8 @@ func (d *DevWebServer) handleIPCWebSocket(c echo.Context) error {
             }
 
             if result != "" {
-                locker.Lock()
-                defer locker.Unlock()
+                info.locker.Lock()
+                defer info.locker.Unlock()
                 if err := conn.WriteMessage(websocket.TextMessage, []byte(result)); err != nil {
                     d.logger.Error("Websocket write message failed %v", err)
                 }
