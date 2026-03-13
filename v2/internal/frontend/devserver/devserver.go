@@ -21,19 +21,25 @@ import (
 
     "github.com/wailsapp/wails/v2/internal/frontend/runtime"
 
+    "golang.org/x/net/websocket"
     "github.com/labstack/echo/v4"
     "github.com/wailsapp/wails/v2/internal/binding"
     "github.com/wailsapp/wails/v2/internal/frontend"
     "github.com/wailsapp/wails/v2/internal/logger"
     "github.com/wailsapp/wails/v2/internal/menumanager"
     "github.com/wailsapp/wails/v2/pkg/options"
-    "golang.org/x/net/websocket"
 )
 
 type Screen = frontend.Screen
 
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin:     func(r *http.Request) bool { return true },
+}
+
 type WebsocketInfo struct {
-    //locker sync.Mutex
+    locker sync.Mutex
     eventCache sync.Map
 }
 type DevWebServer struct {
@@ -167,79 +173,95 @@ func (d *DevWebServer) handleReloadApp(c echo.Context) error {
 }
 
 func (d *DevWebServer) handleIPCWebSocket(c echo.Context) error {
-    websocket.Handler(func(c *websocket.Conn) {
-        d.LogDebug(fmt.Sprintf("Websocket client %p connected", c))
+    conn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
+    if err != nil {
+        d.logger.Error("WebSocket upgrade failed %v", err)
+        return err
+    }
+    d.LogDebug(fmt.Sprintf("WebSocket client %p connected", conn))
+
+    d.socketMutex.Lock()
+    d.websocketClients[conn] = &WebsocketInfo{}
+    locker := d.websocketClients[conn]
+    d.socketMutex.Unlock()
+
+    var wg sync.WaitGroup
+
+    defer func() {
+        wg.Wait()
         d.socketMutex.Lock()
-        d.websocketClients[c] = &WebsocketInfo{}
-        info := d.websocketClients[c]
+        delete(d.websocketClients, conn)
         d.socketMutex.Unlock()
+        d.LogDebug(fmt.Sprintf("WebSocket client %p disconnected", conn))
+        conn.Close()
+    }()
 
-        defer func() {
-            d.socketMutex.Lock()
-            delete(d.websocketClients, c)
-            d.socketMutex.Unlock()
-            d.LogDebug(fmt.Sprintf("Websocket client %p disconnected", c))
-        }()
+    for {
+        var fullMsg []byte
+        var msg []byte
+        _, msg, err = conn.ReadMessage()
+        if err != nil {
+            break
+        }
+        buffer := bytes.Buffer{}
+        buffer.Write(msg)
 
-        defer c.Close()
-        for {
-            var fullMsg []byte
-            var msg []byte
-            if err := websocket.Message.Receive(c, &msg); err != nil {
-                break
-            }
-            buffer := bytes.Buffer{}
-            buffer.Write(msg)
-            // 修复websocket分帧导致数据不完整
-            if bytes.HasPrefix(msg, []byte(`C{"`)) {
-                for {
-                    if bytes.HasSuffix(msg, []byte(`"}`)) {
-                        break
-                    }
-                    msg = make([]byte, 0)
-                    if err := websocket.Message.Receive(c, &msg); err != nil {
-                        return
-                    }
-                    buffer.Write(msg)
+        // 修复websocket分帧导致数据不完整
+        if bytes.HasPrefix(msg, []byte(`C{"`)) {
+            for {
+                if bytes.HasSuffix(msg, []byte(`"}`)) {
+                    break
                 }
+                msg = make([]byte, 0)
+                _, msg, err = conn.ReadMessage()
+                if err != nil {
+                    return 
+                }
+                buffer.Write(msg)
             }
-            fullMsg = buffer.Bytes()
-            buffer.Reset()
-            // We do not support drag in browsers
-            if len(fullMsg) == 4 && string(fullMsg) == "drag" {
-                continue
+        }
+        wg.Add(1)
+        fullMsg = buffer.Bytes()
+        buffer.Reset()
+
+        
+        go func(m string) {
+            defer wg.Done()
+
+            if m == "drag" {
+                return
             }
 
             // Notify the other browsers of "EventEmit"
-            if len(fullMsg) > 2 {
-                switch string(fullMsg)[:2] {
+            if len(m) > 2 {
+                switch m[:2] {
                 case "EE":
-                    d.notifyExcludingSender([]byte(fullMsg), c)
+                    d.notifyExcludingSender([]byte(m), conn)
                     // 2025年3月11日13:49:59
                     // 实现ws连接和事件绑定
                 case "EB":
-                    info.eventCache.Store(string(fullMsg)[2:], true)
-                    continue
+                    info.eventCache.Store(m[2:], true)
+                    return
                 case "EX":
-                    info.eventCache.Delete(string(fullMsg)[2:])
+                    info.eventCache.Delete(m[2:])
                 }
             }
 
-            // Send the message to dispatch to the frontend
-            result, err := d.dispatcher.ProcessMessage(string(fullMsg), d)
+            result, err := d.dispatcher.ProcessMessage(m, d)
             if err != nil {
                 d.logger.Error(err.Error())
             }
+
             if result != "" {
-                //info.locker.Lock()
-                if err = websocket.Message.Send(c, result); err != nil {
-                    //info.locker.Unlock()
-                    break
+                locker.Lock()
+                defer locker.Unlock()
+                if err := conn.WriteMessage(websocket.TextMessage, []byte(result)); err != nil {
+                    d.logger.Error("Websocket write message failed %v", err)
                 }
-                //info.locker.Unlock()
             }
-        }
-    }).ServeHTTP(c.Response(), c.Request())
+        }(string(fullMsg))
+    }
+
     return nil
 }
 
@@ -255,26 +277,28 @@ type EventNotify struct {
 func (d *DevWebServer) broadcast(message string, name string) {
     d.socketMutex.Lock()
     defer d.socketMutex.Unlock()
-    for client, info := range d.websocketClients {
-        go func(client *websocket.Conn, cache *sync.Map) {
+    for client, v := range d.websocketClients {
+        go func(client *websocket.Conn, info *WebsocketInfo) {
             if client == nil {
                 d.logger.Error("Lost connection to websocket server")
                 return
             }
+            info.locker.Lock()
+            defer info.locker.Unlock()
             // 2025年3月11日13:50:36
             // 完成未监听事件的过滤
             if name != "" {
-                if _, ok := cache.Load(name); !ok {
+                if _, ok := info.eventCache.Load(name); !ok {
                     return
                 }
             }
 
-            err := websocket.Message.Send(client, message)
+            err := client.WriteMessage(websocket.TextMessage, []byte(message))
             if err != nil {
                 d.logger.Error(err.Error())
                 return
             }
-        }(client, &info.eventCache)
+        }(client, v)
     }
 }
 
@@ -295,19 +319,19 @@ func (d *DevWebServer) notify(name string, data ...interface{}) {
 func (d *DevWebServer) broadcastExcludingSender(message string, sender *websocket.Conn) {
     d.socketMutex.Lock()
     defer d.socketMutex.Unlock()
-    for client, info := range d.websocketClients {
-        go func(client *websocket.Conn, cache *sync.Map) {
+    for client, v := range d.websocketClients {
+        go func(client *websocket.Conn, info *WebsocketInfo) {
             if client == sender {
                 return
             }
-            //fmt.Println(message)
-
-            err := websocket.Message.Send(client, message)
+            info.locker.Lock()
+            defer info.locker.Unlock()
+            err := client.WriteMessage(websocket.TextMessage, []byte(message))
             if err != nil {
                 d.logger.Error(err.Error())
                 return
             }
-        }(client, &info.eventCache)
+        }(client, v)
     }
 }
 
