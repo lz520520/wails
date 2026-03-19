@@ -30,10 +30,20 @@ const (
 
 type Experimental struct{}
 
-type WebSocket struct {
-	Server *http.Server
-	WsOnly bool
+// WebSocketUser 表示经过认证的 WebSocket 用户
+type WebSocketUser struct {
+	UserID   string
+	Username string
 }
+
+type WebSocket struct {
+	Server      *http.Server
+	WsOnly      bool
+	AuthHandler func(token string) (*WebSocketUser, error) // WebSocket 连接认证回调
+}
+
+// GetRequestUser 全局函数变量，由 dispatcher 包的 init() 注册，Level6 通过此函数获取当前请求用户
+var GetRequestUser func() *WebSocketUser
 
 // App contains options for creating the App
 type App struct {

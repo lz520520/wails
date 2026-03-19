@@ -72,10 +72,15 @@ function handleConnect() {
 }
 
 // Handles websocket disconnects
-function handleDisconnect() {
+function handleDisconnect(e) {
     log('Disconnected from backend');
     websocket = null;
     showOverlay();
+    // Auth 错误不重连，避免无限循环
+    if (e && e.code >= 4000 && e.code < 5000) {
+        console.error('[Wails IPC] Auth failed (code ' + e.code + '): ' + e.reason);
+        return;
+    }
     connect();
 }
 
@@ -85,9 +90,12 @@ let host = null;
 function _connect() {
     if (websocket == null) {
         get_host();
-        websocket = new WebSocket((protocol.startsWith("https") ? "wss://" : "ws://") + host + "/wails/ipc");
+        const token = localStorage.getItem('token') || '';
+        const query = token ? '?token=' + encodeURIComponent(token) : '';
+        websocket = new WebSocket((protocol.startsWith("https") ? "wss://" : "ws://") + host + "/wails/ipc" + query);
         websocket.onopen = handleConnect;
         websocket.onerror = function (e) {
+            console.error('[Wails IPC] WebSocket error:', e);
             e.stopImmediatePropagation();
             e.stopPropagation();
             e.preventDefault();

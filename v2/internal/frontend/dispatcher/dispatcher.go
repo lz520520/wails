@@ -33,6 +33,14 @@ func NewDispatcher(ctx context.Context, log *logger.Logger, bindings *binding.Bi
 }
 
 func (d *Dispatcher) ProcessMessage(message string, sender frontend.Frontend) (_ string, err error) {
+	// 自动注入用户上下文
+	if up, ok := sender.(UserProvider); ok {
+		if user := up.GetCurrentUser(); user != nil {
+			SetRequestUser(user)
+			defer ClearRequestUser()
+		}
+	}
+
 	if !d.disablePanicRecovery {
 		defer func() {
 			if e := recover(); e != nil {

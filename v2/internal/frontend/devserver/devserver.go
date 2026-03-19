@@ -15,11 +15,14 @@ import (
     "net/http"
     "net/http/httputil"
     "net/url"
+    "runtime"
+    "strconv"
+    "strings"
     "sync"
 
     "github.com/wailsapp/wails/v2/pkg/assetserver"
 
-    "github.com/wailsapp/wails/v2/internal/frontend/runtime"
+    wailsruntime "github.com/wailsapp/wails/v2/internal/frontend/runtime"
 
     "github.com/gorilla/websocket"
     "github.com/labstack/echo/v4"
@@ -41,7 +44,11 @@ var upgrader = websocket.Upgrader{
 type WebsocketInfo struct {
     locker     sync.Mutex
     eventCache sync.Map
+    user       *options.WebSocketUser
 }
+
+// connUserMap 映射 goroutineID → *websocket.Conn，用于从消息处理 goroutine 查找对应连接的用户
+var connUserMap sync.Map
 type DevWebServer struct {
     server           *echo.Echo
     ctx              context.Context
@@ -108,7 +115,7 @@ func (d *DevWebServer) Run(ctx context.Context) error {
         log.Fatal(err)
     }
 
-    assetServer, err := assetserver.NewDevAssetServer(assetHandler, bindingsJSON, ctx.Value("assetdir") != nil, myLogger, runtime.RuntimeAssetsBundle)
+    assetServer, err := assetserver.NewDevAssetServer(assetHandler, bindingsJSON, ctx.Value("assetdir") != nil, myLogger, wailsruntime.RuntimeAssetsBundle)
     if err != nil {
         log.Fatal(err)
     }
@@ -173,15 +180,41 @@ func (d *DevWebServer) handleReloadApp(c echo.Context) error {
 }
 
 func (d *DevWebServer) handleIPCWebSocket(c echo.Context) error {
+    // 先完成 WebSocket upgrade，再做认证
+    // 原因：浏览器 WebSocket API 在握手失败时拿不到 HTTP 响应体，
+    // 只有 upgrade 成功后通过 CloseMessage 发送的 reason 才能被前端 onclose 读取
     conn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
     if err != nil {
         d.logger.Error("WebSocket upgrade failed %v", err)
         return err
     }
+
+    // WebSocket 认证
+    var wsUser *options.WebSocketUser
+    if d.appoptions.WebSocket.AuthHandler != nil {
+        token := c.QueryParam("token")
+        if token == "" {
+            d.logger.Error("WebSocket auth failed: missing token")
+            conn.WriteMessage(websocket.CloseMessage,
+                websocket.FormatCloseMessage(4001, "missing token"))
+            conn.Close()
+            return nil
+        }
+        u, err := d.appoptions.WebSocket.AuthHandler(token)
+        if err != nil {
+            d.logger.Error("WebSocket auth failed: invalid token")
+            conn.WriteMessage(websocket.CloseMessage,
+                websocket.FormatCloseMessage(4001, "invalid token"))
+            conn.Close()
+            return nil
+        }
+        wsUser = u
+    }
+
     d.LogDebug(fmt.Sprintf("WebSocket client %p connected", conn))
 
     d.socketMutex.Lock()
-    d.websocketClients[conn] = &WebsocketInfo{}
+    d.websocketClients[conn] = &WebsocketInfo{user: wsUser}
     info := d.websocketClients[conn]
     d.socketMutex.Unlock()
 
@@ -224,8 +257,13 @@ func (d *DevWebServer) handleIPCWebSocket(c echo.Context) error {
         fullMsg = buffer.Bytes()
         buffer.Reset()
 
-        go func(m string) {
+        go func(m string, conn *websocket.Conn) {
             defer wg.Done()
+
+            // 标记当前 goroutine 对应的连接，用于 GetCurrentUser 查找用户
+            gid := devCurGoroutineID()
+            connUserMap.Store(gid, conn)
+            defer connUserMap.Delete(gid)
 
             if m == "drag" {
                 return
@@ -239,13 +277,16 @@ func (d *DevWebServer) handleIPCWebSocket(c echo.Context) error {
                     // 2025年3月11日13:49:59
                     // 实现ws连接和事件绑定
                 case "EB":
+                    //d.logger.Debug("Bind Event: %s", m[2:])
                     info.eventCache.Store(m[2:], true)
                     return
                 case "EX":
+                    //d.logger.Debug("Release Event: %s", m[2:])
                     info.eventCache.Delete(m[2:])
                 }
             }
 
+            // dispatcher.ProcessMessage 内部自动调用 sender.(UserProvider).GetCurrentUser()
             result, err := d.dispatcher.ProcessMessage(m, d)
             if err != nil {
                 d.logger.Error(err.Error())
@@ -258,7 +299,7 @@ func (d *DevWebServer) handleIPCWebSocket(c echo.Context) error {
                     d.logger.Error("Websocket write message failed %v", err)
                 }
             }
-        }(string(fullMsg))
+        }(string(fullMsg), conn)
     }
 
     return nil
@@ -287,9 +328,11 @@ func (d *DevWebServer) broadcast(message string, name string) {
             // 2025年3月11日13:50:36
             // 完成未监听事件的过滤
             if name != "" {
+                //d.logger.Debug("Emit Event: %s",name)
                 if _, ok := info.eventCache.Load(name); !ok {
                     return
                 }
+                //d.logger.Debug("Found Event: %s",name)
             }
 
             err := client.WriteMessage(websocket.TextMessage, []byte(message))
@@ -345,6 +388,31 @@ func (d *DevWebServer) notifyExcludingSender(eventMessage []byte, sender *websoc
         return
     }
     d.Frontend.Notify(notifyMessage.Name, notifyMessage.Data...)
+}
+
+// GetCurrentUser 实现 dispatcher.UserProvider 接口
+// 通过当前 goroutineID 查找对应的 websocket 连接，返回连接关联的用户信息
+func (d *DevWebServer) GetCurrentUser() *options.WebSocketUser {
+    gid := devCurGoroutineID()
+    if v, ok := connUserMap.Load(gid); ok {
+        conn := v.(*websocket.Conn)
+        d.socketMutex.Lock()
+        info := d.websocketClients[conn]
+        d.socketMutex.Unlock()
+        if info != nil {
+            return info.user
+        }
+    }
+    return nil
+}
+
+func devCurGoroutineID() uint64 {
+    var buf [64]byte
+    n := runtime.Stack(buf[:], false)
+    s := strings.TrimPrefix(string(buf[:n]), "goroutine ")
+    s = s[:strings.IndexByte(s, ' ')]
+    id, _ := strconv.ParseUint(s, 10, 64)
+    return id
 }
 
 func NewFrontend(ctx context.Context, appoptions *options.App, myLogger *logger.Logger, appBindings *binding.Bindings, dispatcher frontend.Dispatcher, menuManager *menumanager.Manager, desktopFrontend frontend.Frontend) *DevWebServer {
