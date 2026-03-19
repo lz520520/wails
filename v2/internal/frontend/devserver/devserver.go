@@ -49,6 +49,7 @@ type WebsocketInfo struct {
 
 // connUserMap 映射 goroutineID → *websocket.Conn，用于从消息处理 goroutine 查找对应连接的用户
 var connUserMap sync.Map
+
 type DevWebServer struct {
     server           *echo.Echo
     ctx              context.Context
@@ -194,7 +195,7 @@ func (d *DevWebServer) handleIPCWebSocket(c echo.Context) error {
     if d.appoptions.WebSocket.AuthHandler != nil {
         token := c.QueryParam("token")
         if token == "" {
-            d.logger.Error("WebSocket auth failed: missing token")
+            d.logger.Debug("WebSocket auth failed: missing token")
             conn.WriteMessage(websocket.CloseMessage,
                 websocket.FormatCloseMessage(4001, "missing token"))
             conn.Close()
