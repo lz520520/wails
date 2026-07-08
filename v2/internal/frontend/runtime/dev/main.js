@@ -20,8 +20,7 @@ let messageQueue = [];
 
 window.WailsInvoke = (message) => {
     if (!wailsInvokeInternal) {
-        console.log("Queueing: " + message);
-        messageQueue.push(message);
+        queueMessage(message);
         return;
     }
     wailsInvokeInternal(message);
@@ -37,6 +36,19 @@ window.addEventListener('DOMContentLoaded', () => {
 let websocket = null;
 let connectTimer;
 
+function isWebSocketOpen() {
+    return websocket && websocket.readyState === WebSocket.OPEN;
+}
+
+function queueMessage(message) {
+    console.log("Queueing: " + message);
+    messageQueue.push(message);
+}
+
+function resetIPCBridge() {
+    wailsInvokeInternal = null;
+}
+
 window.onbeforeunload = function () {
     if (websocket) {
         websocket.onclose = function () {
@@ -51,13 +63,18 @@ connect();
 
 function setupIPCBridge() {
     wailsInvokeInternal = (message) => {
+        if (!isWebSocketOpen()) {
+            queueMessage(message);
+            return;
+        }
         websocket.send(message);
     };
-    for (let i = 0; i < messageQueue.length; i++) {
-        console.log("sending queued message: " + messageQueue[i]);
-        window.WailsInvoke(messageQueue[i]);
-    }
+    const queuedMessages = messageQueue;
     messageQueue = [];
+    for (let i = 0; i < queuedMessages.length; i++) {
+        console.log("sending queued message: " + queuedMessages[i]);
+        window.WailsInvoke(queuedMessages[i]);
+    }
 }
 
 // Handles incoming websocket connections
@@ -75,12 +92,27 @@ function handleConnect() {
 function handleDisconnect(e) {
     log('Disconnected from backend');
     websocket = null;
+    resetIPCBridge();
     showOverlay();
     // Auth 错误不重连，避免无限循环
     if (e && e.code >= 4000 && e.code < 5000) {
         console.error('[Wails IPC] Auth failed (code ' + e.code + '): ' + e.reason);
+        promptForWebSocketToken(e.reason || 'auth failed');
         return;
     }
+    connect();
+}
+
+function promptForWebSocketToken(reason) {
+    if (!window.prompt) {
+        return;
+    }
+    const currentToken = localStorage.getItem('token') || '';
+    const token = window.prompt('WebSocket authentication failed: ' + reason + '\nPlease enter SSO token:', currentToken);
+    if (!token || !token.trim()) {
+        return;
+    }
+    localStorage.setItem('token', token.trim());
     connect();
 }
 
@@ -100,6 +132,7 @@ function _connect() {
             e.stopPropagation();
             e.preventDefault();
             websocket = null;
+            resetIPCBridge();
             return false;
         };
     }
