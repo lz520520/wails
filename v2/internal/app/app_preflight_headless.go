@@ -1,4 +1,4 @@
-//go:build (linux || darwin) && !bindings && !headless
+//go:build headless && !bindings
 
 package app
 

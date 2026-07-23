@@ -1,4 +1,4 @@
-//go:build dev && !headless
+//go:build dev && headless
 
 package app
 
@@ -14,16 +14,15 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/wailsapp/wails/v2/pkg/assetserver"
-
 	"github.com/wailsapp/wails/v2/internal/binding"
-	"github.com/wailsapp/wails/v2/internal/frontend/desktop"
 	"github.com/wailsapp/wails/v2/internal/frontend/devserver"
 	"github.com/wailsapp/wails/v2/internal/frontend/dispatcher"
+	"github.com/wailsapp/wails/v2/internal/frontend/headless"
 	"github.com/wailsapp/wails/v2/internal/frontend/runtime"
 	"github.com/wailsapp/wails/v2/internal/fs"
 	"github.com/wailsapp/wails/v2/internal/logger"
 	"github.com/wailsapp/wails/v2/internal/menumanager"
+	"github.com/wailsapp/wails/v2/pkg/assetserver"
 	pkglogger "github.com/wailsapp/wails/v2/pkg/logger"
 	"github.com/wailsapp/wails/v2/pkg/options"
 )
@@ -38,15 +37,15 @@ func (a *App) Run() error {
 	return err
 }
 
-// CreateApp creates the app!
 func CreateApp(appoptions *options.App) (*App, error) {
 	var err error
 
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, "debug", true)
-	ctx = context.WithValue(ctx, "devtoolsEnabled", true)
+	ctx = context.WithValue(ctx, "devtoolsEnabled", false)
 
-	// Set up logger if the appoptions.LogLevel is an invalid value, set it to the default log level
+	appoptions.WebSocket.WsOnly = true
+
 	appoptions.LogLevel, err = pkglogger.StringToLogLevel(appoptions.LogLevel.String())
 	if err != nil {
 		return nil, err
@@ -55,7 +54,6 @@ func CreateApp(appoptions *options.App) (*App, error) {
 	myLogger := logger.New(appoptions.Logger)
 	myLogger.SetLogLevel(appoptions.LogLevel)
 
-	// Check for CLI Flags
 	devFlags := flag.NewFlagSet("dev", flag.ContinueOnError)
 
 	var assetdirFlag *string
@@ -85,9 +83,7 @@ func CreateApp(appoptions *options.App) (*App, error) {
 	}
 	loglevelFlag = devFlags.String("loglevel", appLogLevel, "Loglevel to use - Trace, Debug, Info, Warning, Error")
 
-	// If we weren't given the assetdir in the environment variables
 	if assetdir == "" {
-		// Parse args but ignore errors in case -appargs was used to pass in args for the app.
 		_ = devFlags.Parse(os.Args[1:])
 		if assetdirFlag != nil {
 			assetdir = *assetdirFlag
@@ -121,7 +117,6 @@ func CreateApp(appoptions *options.App) (*App, error) {
 		}
 
 		ctx = context.WithValue(ctx, "assetserverport", port)
-
 		ctx = context.WithValue(ctx, "frontenddevserverurl", frontendDevServerURL)
 
 		externalURL, err := url.Parse(frontendDevServerURL)
@@ -130,7 +125,7 @@ func CreateApp(appoptions *options.App) (*App, error) {
 		}
 
 		if externalURL.Host == "" {
-			return nil, fmt.Errorf("Invalid frontend:dev:serverUrl missing protocol scheme?")
+			return nil, fmt.Errorf("invalid frontend:dev:serverUrl missing protocol scheme")
 		}
 
 		waitCb := func() { myLogger.Debug("Waiting for frontend DevServer '%s' to be ready", externalURL) }
@@ -146,7 +141,6 @@ func CreateApp(appoptions *options.App) (*App, error) {
 		myLogger.Info("Serving assets from frontend DevServer URL: %s", frontendDevServerURL)
 	} else {
 		if assetdir == "" {
-			// If no assetdir has been defined, let's try to infer it from the project root and the asset FS.
 			assetdir, err = tryInferAssetDirFromFS(assetConfig.Assets)
 			if err != nil {
 				return nil, fmt.Errorf("unable to infer the AssetDir from your Assets fs.FS: %w", err)
@@ -154,7 +148,6 @@ func CreateApp(appoptions *options.App) (*App, error) {
 		}
 
 		if assetdir != "" {
-			// Let's override the assets to serve from on disk, if needed
 			absdir, err := filepath.Abs(assetdir)
 			if err != nil {
 				return nil, err
@@ -167,7 +160,6 @@ func CreateApp(appoptions *options.App) (*App, error) {
 		}
 	}
 
-	// Migrate deprecated options to the new AssetServer option
 	appoptions.Assets = nil
 	appoptions.AssetsHandler = nil
 	appoptions.AssetServer = &assetConfig
@@ -181,30 +173,23 @@ func CreateApp(appoptions *options.App) (*App, error) {
 		if err != nil {
 			return nil, err
 		}
-		// Only set the log level if it's different from the appoptions.LogLevel
 		if level != appoptions.LogLevel {
 			myLogger.SetLogLevel(level)
 		}
 	}
 
-	// Attach logger to context
 	ctx = context.WithValue(ctx, "logger", myLogger)
 	ctx = context.WithValue(ctx, "buildtype", "dev")
 
-	// Preflight checks
 	err = PreflightChecks(appoptions, myLogger)
 	if err != nil {
 		return nil, err
 	}
 
-	// Merge default options
 	options.MergeDefaults(appoptions)
 
 	var menuManager *menumanager.Manager
-
-	// Process the application menu
 	if appoptions.Menu != nil {
-		// Create the menu manager
 		menuManager = menumanager.NewManager()
 		err = menuManager.SetApplicationMenu(appoptions.Menu)
 		if err != nil {
@@ -212,7 +197,6 @@ func CreateApp(appoptions *options.App) (*App, error) {
 		}
 	}
 
-	// Create binding exemptions - Ugly hack. There must be a better way
 	bindingExemptions := []interface{}{
 		appoptions.OnStartup,
 		appoptions.OnShutdown,
@@ -225,11 +209,9 @@ func CreateApp(appoptions *options.App) (*App, error) {
 	ctx = context.WithValue(ctx, "events", eventHandler)
 	messageDispatcher := dispatcher.NewDispatcher(ctx, myLogger, appBindings, eventHandler, appoptions.ErrorFormatter, appoptions.DisablePanicRecovery)
 
-	// Create the frontends and register to event handler
-	desktopFrontend := desktop.NewFrontend(ctx, appoptions, myLogger, appBindings, messageDispatcher)
-	appFrontend := devserver.NewFrontend(ctx, appoptions, myLogger, appBindings, messageDispatcher, menuManager, desktopFrontend)
+	headlessFrontend := headless.NewFrontend(ctx, appoptions, myLogger, appBindings, messageDispatcher)
+	appFrontend := devserver.NewFrontend(ctx, appoptions, myLogger, appBindings, messageDispatcher, menuManager, headlessFrontend)
 	eventHandler.AddFrontend(appFrontend)
-	eventHandler.AddFrontend(desktopFrontend)
 
 	ctx = context.WithValue(ctx, "frontend", appFrontend)
 	result := &App{
@@ -240,18 +222,15 @@ func CreateApp(appoptions *options.App) (*App, error) {
 		startupCallback:  appoptions.OnStartup,
 		shutdownCallback: appoptions.OnShutdown,
 		debug:            true,
-		devtoolsEnabled:  true,
+		devtoolsEnabled:  false,
+		options:          appoptions,
 	}
 
-	result.options = appoptions
-
 	return result, nil
-
 }
 
 func tryInferAssetDirFromFS(assets iofs.FS) (string, error) {
 	if _, isEmbedFs := assets.(embed.FS); !isEmbedFs {
-		// We only infer the assetdir for embed.FS assets
 		return "", nil
 	}
 

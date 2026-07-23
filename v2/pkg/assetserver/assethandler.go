@@ -53,7 +53,7 @@ func NewAssetHandler(options assetserver.Options, log Logger) (http.Handler, err
 					msg += fmt.Sprintf(", please make sure the embedded directory '%s' is correct and contains your assets", rootFolder)
 				}
 
-				return nil, fmt.Errorf(msg)
+				return nil, errors.New(msg)
 			}
 
 			return nil, err

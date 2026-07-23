@@ -1,5 +1,4 @@
-//go:build !windows && !headless
-// +build !windows,!headless
+//go:build headless
 
 package application
 
