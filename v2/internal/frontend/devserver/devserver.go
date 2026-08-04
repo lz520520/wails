@@ -6,9 +6,9 @@
 package devserver
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/assetserver"
 
@@ -41,13 +42,73 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin:     func(r *http.Request) bool { return true },
 }
 
-type WebsocketInfo struct {
-	locker     sync.Mutex
-	eventCache sync.Map
-	user       *options.WebSocketUser
+const (
+	websocketWriteWait     = 10 * time.Second
+	websocketPongWait      = 60 * time.Second
+	websocketPingPeriod    = websocketPongWait * 9 / 10
+	websocketSendQueueSize = 256
+)
+
+var (
+	errWebsocketClosed       = errors.New("websocket connection is closed")
+	errWebsocketBackpressure = errors.New("websocket send queue is full")
+)
+
+type websocketMessage struct {
+	messageType int
+	payload     []byte
 }
 
-// connUserMap 映射 goroutineID → *websocket.Conn，用于从消息处理 goroutine 查找对应连接的用户
+type WebsocketInfo struct {
+	eventCache sync.Map
+	user       *options.WebSocketUser
+	conn       *websocket.Conn
+	send       chan websocketMessage
+	done       chan struct{}
+	closeOnce  sync.Once
+}
+
+func newWebsocketInfo(conn *websocket.Conn, user *options.WebSocketUser) *WebsocketInfo {
+	return &WebsocketInfo{
+		user: user,
+		conn: conn,
+		send: make(chan websocketMessage, websocketSendQueueSize),
+		done: make(chan struct{}),
+	}
+}
+
+func (i *WebsocketInfo) close() {
+	i.closeOnce.Do(func() {
+		close(i.done)
+		if i.conn != nil {
+			_ = i.conn.Close()
+		}
+	})
+}
+
+func (i *WebsocketInfo) enqueue(messageType int, payload []byte) error {
+	message := websocketMessage{
+		messageType: messageType,
+		payload:     append([]byte(nil), payload...),
+	}
+
+	select {
+	case <-i.done:
+		return errWebsocketClosed
+	default:
+	}
+
+	select {
+	case <-i.done:
+		return errWebsocketClosed
+	case i.send <- message:
+		return nil
+	default:
+		return errWebsocketBackpressure
+	}
+}
+
+// connUserMap 映射 goroutineID → *WebsocketInfo，用于从消息处理 goroutine 查找对应连接的用户
 var connUserMap sync.Map
 
 type DevWebServer struct {
@@ -214,96 +275,131 @@ func (d *DevWebServer) handleIPCWebSocket(c echo.Context) error {
 
 	d.LogDebug(fmt.Sprintf("WebSocket client %p connected", conn))
 
+	info := newWebsocketInfo(conn, wsUser)
+	_ = conn.SetReadDeadline(time.Now().Add(websocketPongWait))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(websocketPongWait))
+	})
+
 	d.socketMutex.Lock()
-	d.websocketClients[conn] = &WebsocketInfo{user: wsUser}
-	info := d.websocketClients[conn]
+	d.websocketClients[conn] = info
 	d.socketMutex.Unlock()
 
-	var wg sync.WaitGroup
+	go d.runWebsocketWriter(info)
 
 	defer func() {
-		wg.Wait()
-		d.socketMutex.Lock()
-		delete(d.websocketClients, conn)
-		d.socketMutex.Unlock()
+		d.removeWebsocketClient(conn, info)
 		d.LogDebug(fmt.Sprintf("WebSocket client %p disconnected", conn))
-		conn.Close()
 	}()
 
 	for {
-		var fullMsg []byte
-		var msg []byte
-		_, msg, err = conn.ReadMessage()
+		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			break
 		}
-		buffer := bytes.Buffer{}
-		buffer.Write(msg)
 
-		// 修复websocket分帧导致数据不完整
-		if bytes.HasPrefix(msg, []byte(`C{"`)) {
-			for {
-				if bytes.HasSuffix(msg, []byte(`"}`)) {
-					break
-				}
-				msg = make([]byte, 0)
-				_, msg, err = conn.ReadMessage()
-				if err != nil {
-					return err
-				}
-				buffer.Write(msg)
-			}
+		message := string(msg)
+		if d.handleConnectionControlMessage(message, info) {
+			continue
 		}
-		wg.Add(1)
-		fullMsg = buffer.Bytes()
-		buffer.Reset()
 
-		go func(m string, conn *websocket.Conn) {
-			defer wg.Done()
-
-			// 标记当前 goroutine 对应的连接，用于 GetCurrentUser 查找用户
-			gid := devCurGoroutineID()
-			connUserMap.Store(gid, conn)
-			defer connUserMap.Delete(gid)
-
-			if d.handleRuntimeMessage(m) {
-				return
-			}
-
-			// Notify the other browsers of "EventEmit"
-			if len(m) > 2 {
-				switch m[:2] {
-				case "EE":
-					d.notifyExcludingSender([]byte(m), conn)
-					// 2025年3月11日13:49:59
-					// 实现ws连接和事件绑定
-				case "EB":
-					//d.logger.Debug("Bind Event: %s", m[2:])
-					info.eventCache.Store(m[2:], true)
-					return
-				case "EX":
-					//d.logger.Debug("Release Event: %s", m[2:])
-					info.eventCache.Delete(m[2:])
-				}
-			}
-
-			// dispatcher.ProcessMessage 内部自动调用 sender.(UserProvider).GetCurrentUser()
-			result, err := d.dispatcher.ProcessMessage(m, d)
-			if err != nil {
-				d.logger.Error("%s", err.Error())
-			}
-
-			if result != "" {
-				info.locker.Lock()
-				defer info.locker.Unlock()
-				if err := conn.WriteMessage(websocket.TextMessage, []byte(result)); err != nil {
-					d.logger.Error("Websocket write message failed %v", err)
-				}
-			}
-		}(string(fullMsg), conn)
+		go d.processWebsocketMessage(message, info)
 	}
 
 	return nil
+}
+
+func (d *DevWebServer) handleConnectionControlMessage(message string, info *WebsocketInfo) bool {
+	if d.handleRuntimeMessage(message) {
+		return true
+	}
+
+	if len(message) <= 2 {
+		return false
+	}
+
+	switch message[:2] {
+	case "EB":
+		// Binding must be applied in the reader goroutine before a following RPC
+		// is dispatched. Otherwise a synchronous EventsEmit from that RPC can be
+		// filtered out before this connection's subscription becomes visible.
+		info.eventCache.Store(message[2:], true)
+		return true
+	case "EX":
+		// Keep the connection-local filter ordered with surrounding messages.
+		// The dispatcher still processes EX asynchronously for Go listeners.
+		info.eventCache.Delete(message[2:])
+	}
+
+	return false
+}
+
+func (d *DevWebServer) processWebsocketMessage(message string, info *WebsocketInfo) {
+	// 标记当前 goroutine 对应的连接，用于 GetCurrentUser 查找用户
+	gid := devCurGoroutineID()
+	connUserMap.Store(gid, info)
+	defer connUserMap.Delete(gid)
+
+	// Notify the other browsers of "EventEmit".
+	if len(message) > 2 && message[:2] == "EE" {
+		d.notifyExcludingSender([]byte(message), info.conn)
+	}
+
+	// dispatcher.ProcessMessage 内部自动调用 sender.(UserProvider).GetCurrentUser()
+	result, err := d.dispatcher.ProcessMessage(message, d)
+	if err != nil {
+		d.logger.Error("%s", err.Error())
+	}
+
+	if result == "" {
+		return
+	}
+	if err := d.sendWebsocketMessage(info, websocket.TextMessage, []byte(result)); err != nil && !errors.Is(err, errWebsocketClosed) && !errors.Is(err, errWebsocketBackpressure) {
+		d.logger.Error("Websocket write message failed: %v", err)
+	}
+}
+
+func (d *DevWebServer) runWebsocketWriter(info *WebsocketInfo) {
+	pingTicker := time.NewTicker(websocketPingPeriod)
+	defer pingTicker.Stop()
+	defer info.close()
+
+	for {
+		select {
+		case message := <-info.send:
+			_ = info.conn.SetWriteDeadline(time.Now().Add(websocketWriteWait))
+			if err := info.conn.WriteMessage(message.messageType, message.payload); err != nil {
+				d.logger.Error("Websocket write message failed: %v", err)
+				return
+			}
+		case <-pingTicker.C:
+			_ = info.conn.SetWriteDeadline(time.Now().Add(websocketWriteWait))
+			if err := info.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				d.logger.Error("Websocket ping failed: %v", err)
+				return
+			}
+		case <-info.done:
+			return
+		}
+	}
+}
+
+func (d *DevWebServer) sendWebsocketMessage(info *WebsocketInfo, messageType int, payload []byte) error {
+	err := info.enqueue(messageType, payload)
+	if errors.Is(err, errWebsocketBackpressure) {
+		d.logger.Error("Closing slow websocket client %p: %v", info.conn, err)
+		d.removeWebsocketClient(info.conn, info)
+	}
+	return err
+}
+
+func (d *DevWebServer) removeWebsocketClient(conn *websocket.Conn, info *WebsocketInfo) {
+	d.socketMutex.Lock()
+	if current, ok := d.websocketClients[conn]; ok && current == info {
+		delete(d.websocketClients, conn)
+	}
+	d.socketMutex.Unlock()
+	info.close()
 }
 
 func (d *DevWebServer) handleRuntimeMessage(message string) bool {
@@ -331,31 +427,24 @@ type EventNotify struct {
 
 func (d *DevWebServer) broadcast(message string, name string) {
 	d.socketMutex.Lock()
-	defer d.socketMutex.Unlock()
+	clients := make([]*WebsocketInfo, 0, len(d.websocketClients))
 	for client, v := range d.websocketClients {
-		go func(client *websocket.Conn, info *WebsocketInfo) {
-			if client == nil {
-				d.logger.Error("Lost connection to websocket server")
-				return
-			}
-			info.locker.Lock()
-			defer info.locker.Unlock()
-			// 2025年3月11日13:50:36
-			// 完成未监听事件的过滤
-			if name != "" {
-				//d.logger.Debug("Emit Event: %s",name)
-				if _, ok := info.eventCache.Load(name); !ok {
-					return
-				}
-				//d.logger.Debug("Found Event: %s",name)
-			}
+		if client != nil && v != nil {
+			clients = append(clients, v)
+		}
+	}
+	d.socketMutex.Unlock()
 
-			err := client.WriteMessage(websocket.TextMessage, []byte(message))
-			if err != nil {
-				d.logger.Error("%s", err.Error())
-				return
+	for _, info := range clients {
+		// 完成未监听事件的过滤
+		if name != "" {
+			if _, ok := info.eventCache.Load(name); !ok {
+				continue
 			}
-		}(client, v)
+		}
+		if err := d.sendWebsocketMessage(info, websocket.TextMessage, []byte(message)); err != nil && !errors.Is(err, errWebsocketClosed) && !errors.Is(err, errWebsocketBackpressure) {
+			d.logger.Error("%s", err.Error())
+		}
 	}
 }
 
@@ -375,20 +464,18 @@ func (d *DevWebServer) notify(name string, data ...interface{}) {
 
 func (d *DevWebServer) broadcastExcludingSender(message string, sender *websocket.Conn) {
 	d.socketMutex.Lock()
-	defer d.socketMutex.Unlock()
+	clients := make([]*WebsocketInfo, 0, len(d.websocketClients))
 	for client, v := range d.websocketClients {
-		go func(client *websocket.Conn, info *WebsocketInfo) {
-			if client == sender {
-				return
-			}
-			info.locker.Lock()
-			defer info.locker.Unlock()
-			err := client.WriteMessage(websocket.TextMessage, []byte(message))
-			if err != nil {
-				d.logger.Error("%s", err.Error())
-				return
-			}
-		}(client, v)
+		if client != sender && client != nil && v != nil {
+			clients = append(clients, v)
+		}
+	}
+	d.socketMutex.Unlock()
+
+	for _, info := range clients {
+		if err := d.sendWebsocketMessage(info, websocket.TextMessage, []byte(message)); err != nil && !errors.Is(err, errWebsocketClosed) && !errors.Is(err, errWebsocketBackpressure) {
+			d.logger.Error("%s", err.Error())
+		}
 	}
 }
 
@@ -410,13 +497,7 @@ func (d *DevWebServer) notifyExcludingSender(eventMessage []byte, sender *websoc
 func (d *DevWebServer) GetCurrentUser() *options.WebSocketUser {
 	gid := devCurGoroutineID()
 	if v, ok := connUserMap.Load(gid); ok {
-		conn := v.(*websocket.Conn)
-		d.socketMutex.Lock()
-		info := d.websocketClients[conn]
-		d.socketMutex.Unlock()
-		if info != nil {
-			return info.user
-		}
+		return v.(*WebsocketInfo).user
 	}
 	return nil
 }

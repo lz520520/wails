@@ -69,6 +69,9 @@ function setupIPCBridge() {
         }
         websocket.send(message);
     };
+}
+
+function flushMessageQueue() {
     const queuedMessages = messageQueue;
     messageQueue = [];
     for (let i = 0; i < queuedMessages.length; i++) {
@@ -85,7 +88,13 @@ function handleConnect() {
     clearInterval(connectTimer);
     websocket.onclose = handleDisconnect;
     websocket.onmessage = handleMessage;
+
+    // Rebuild the connection-local subscription filter before replaying calls
+    // queued while disconnected. The websocket preserves send order, and the
+    // backend applies EB/EX in its reader goroutine, so a queued RPC cannot
+    // emit its result before its listener is visible.
     window.runtime.EventsRebind();
+    flushMessageQueue();
 }
 
 // Handles websocket disconnects

@@ -1,4 +1,4 @@
-import { EventsOnMultiple, EventsNotify, eventListeners, EventsOn, EventsEmit, EventsOffAll, EventsOnce, EventsOff } from './events'
+import { EventsOnMultiple, EventsNotify, eventListeners, EventsOn, EventsEmit, EventsOffAll, EventsOnce, EventsOff, EventsRebind } from './events'
 import { expect, describe, it, beforeAll, vi, afterEach, beforeEach } from 'vitest'
 // Edit an assertion and save to see HMR in action
 
@@ -22,7 +22,8 @@ describe('EventsOnMultiple', () => {
     EventsNotify(JSON.stringify({name: 'a', data: {}}))
     EventsNotify(JSON.stringify({name: 'a', data: {}}))
     expect(cb).toBeCalledTimes(5);
-    expect(window.WailsInvoke).toBeCalledTimes(1);
+    expect(window.WailsInvoke).toBeCalledTimes(2);
+    expect(window.WailsInvoke.calls).toStrictEqual([['EBa'], ['EXa']]);
     expect(window.WailsInvoke).toHaveBeenLastCalledWith('EXa');
   })
 
@@ -35,7 +36,8 @@ describe('EventsOnMultiple', () => {
     EventsNotify(JSON.stringify({name: 'a', data: {}}))
     EventsNotify(JSON.stringify({name: 'a', data: {}}))
     expect(cb).toBeCalledTimes(2)
-    expect(window.WailsInvoke).toBeCalledTimes(1);
+    expect(window.WailsInvoke).toBeCalledTimes(2);
+    expect(window.WailsInvoke.calls).toStrictEqual([['EBa'], ['EXa']]);
     expect(window.WailsInvoke).toHaveBeenLastCalledWith('EXa');
   })
 })
@@ -49,7 +51,8 @@ describe('EventsOn', () => {
   it('should return a cancel fn', () => {
     const cancel = EventsOn('a', () => {})
     cancel();
-    expect(window.WailsInvoke).toBeCalledTimes(1);
+    expect(window.WailsInvoke).toBeCalledTimes(2);
+    expect(window.WailsInvoke.calls).toStrictEqual([['EBa'], ['EXa']]);
     expect(window.WailsInvoke).toHaveBeenLastCalledWith('EXa');
   })
 })
@@ -63,7 +66,8 @@ describe('EventsOnce', () => {
   it('should return a cancel fn', () => {
     const cancel = EventsOn('a', () => {})
     cancel();
-    expect(window.WailsInvoke).toBeCalledTimes(1);
+    expect(window.WailsInvoke).toBeCalledTimes(2);
+    expect(window.WailsInvoke.calls).toStrictEqual([['EBa'], ['EXa']]);
     expect(window.WailsInvoke).toHaveBeenLastCalledWith('EXa');
   })
 })
@@ -75,7 +79,8 @@ describe('EventsNotify', () => {
     EventsNotify(JSON.stringify({name: 'a', data: ["one", "two", "three"]}))
     expect(cb).toBeCalledTimes(1);
     expect(cb).toHaveBeenLastCalledWith("one", "two", "three");
-    expect(window.WailsInvoke).toBeCalledTimes(0);
+    expect(window.WailsInvoke).toBeCalledTimes(1);
+    expect(window.WailsInvoke).toHaveBeenLastCalledWith('EBa');
   })
 })
 
@@ -103,7 +108,7 @@ describe('EventsOff', () => {
     expect(eventListeners['a']).toBeUndefined()
     expect(eventListeners['b']).not.toBeUndefined()
     expect(eventListeners['c']).not.toBeUndefined()
-    expect(window.WailsInvoke).toBeCalledTimes(1);
+    expect(window.WailsInvoke).toBeCalledTimes(6);
     expect(window.WailsInvoke).toHaveBeenLastCalledWith('EXa');
   })
 
@@ -112,8 +117,8 @@ describe('EventsOff', () => {
     expect(eventListeners['a']).toBeUndefined()
     expect(eventListeners['b']).toBeUndefined()
     expect(eventListeners['c']).not.toBeUndefined()
-    expect(window.WailsInvoke).toBeCalledTimes(2);
-    expect(window.WailsInvoke.calls).toStrictEqual([['EXa'], ['EXb']]);
+    expect(window.WailsInvoke).toBeCalledTimes(7);
+    expect(window.WailsInvoke.calls.slice(-2)).toStrictEqual([['EXa'], ['EXb']]);
   })
 })
 
@@ -126,7 +131,20 @@ describe('EventsOffAll', () => {
     EventsOn('c', () => {})
     EventsOffAll()
     expect(eventListeners).toStrictEqual({})
-    expect(window.WailsInvoke).toBeCalledTimes(3);
-    expect(window.WailsInvoke.calls).toStrictEqual([['EXa'], ['EXb'], ['EXc']]);
+    expect(window.WailsInvoke).toBeCalledTimes(8);
+    expect(window.WailsInvoke.calls.slice(-3)).toStrictEqual([['EXa'], ['EXb'], ['EXc']]);
+  })
+})
+
+describe('EventsRebind', () => {
+  it('should send one binding per active event name', () => {
+    EventsOn('a', () => {})
+    EventsOn('a', () => {})
+    EventsOn('b', () => {})
+    vi.resetAllMocks()
+
+    EventsRebind()
+
+    expect(window.WailsInvoke.calls).toStrictEqual([['EBa'], ['EBb']])
   })
 })
