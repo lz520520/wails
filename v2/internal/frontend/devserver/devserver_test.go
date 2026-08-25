@@ -70,7 +70,7 @@ func TestHandleRuntimeMessageIgnoresUnknownMessages(t *testing.T) {
 
 func TestConnectionControlMessagesUpdateEventFilterSynchronously(t *testing.T) {
 	server := &DevWebServer{}
-	info := newWebsocketInfo(nil, nil)
+	info := newWebsocketInfo(nil, nil, nil)
 	defer info.close()
 
 	if !server.handleConnectionControlMessage("EBresult-event", info) {
@@ -85,6 +85,26 @@ func TestConnectionControlMessagesUpdateEventFilterSynchronously(t *testing.T) {
 	}
 	if _, ok := info.eventCache.Load("result-event"); ok {
 		t.Fatal("event release was not visible when control handling returned")
+	}
+}
+
+func TestWebsocketInfoKeepsPeerAndForwardedAddressesSeparate(t *testing.T) {
+	request := httptest.NewRequest("GET", "http://127.0.0.1/wails/ipc", nil)
+	request.RemoteAddr = "192.0.2.25:54321"
+	request.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.2")
+	request.Header.Set("User-Agent", "audit-test")
+	user := &options.WebSocketUser{UserID: "user-1", Username: "alice"}
+	info := newWebsocketInfo(nil, user, request)
+	defer info.close()
+
+	if info.request.SourceIP != "192.0.2.25" {
+		t.Fatalf("source IP = %q", info.request.SourceIP)
+	}
+	if info.request.ForwardedFor != "203.0.113.7, 10.0.0.2" {
+		t.Fatalf("forwarded-for = %q", info.request.ForwardedFor)
+	}
+	if info.request.User != user || info.request.UserAgent != "audit-test" {
+		t.Fatalf("unexpected request metadata: %+v", info.request)
 	}
 }
 

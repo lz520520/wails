@@ -207,7 +207,7 @@ func CreateApp(appoptions *options.App) (*App, error) {
 
 	eventHandler := runtime.NewEvents(myLogger)
 	ctx = context.WithValue(ctx, "events", eventHandler)
-	messageDispatcher := dispatcher.NewDispatcher(ctx, myLogger, appBindings, eventHandler, appoptions.ErrorFormatter, appoptions.DisablePanicRecovery)
+	messageDispatcher := dispatcher.NewDispatcher(ctx, myLogger, appBindings, eventHandler, appoptions.ErrorFormatter, appoptions.DisablePanicRecovery, appoptions.WebSocket.AuditHandler)
 
 	headlessFrontend := headless.NewFrontend(ctx, appoptions, myLogger, appBindings, messageDispatcher)
 	appFrontend := devserver.NewFrontend(ctx, appoptions, myLogger, appBindings, messageDispatcher, menuManager, headlessFrontend)

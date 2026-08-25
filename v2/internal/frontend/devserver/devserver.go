@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -62,19 +63,35 @@ type websocketMessage struct {
 type WebsocketInfo struct {
 	eventCache sync.Map
 	user       *options.WebSocketUser
+	request    options.WebSocketRequestMetadata
 	conn       *websocket.Conn
 	send       chan websocketMessage
 	done       chan struct{}
 	closeOnce  sync.Once
 }
 
-func newWebsocketInfo(conn *websocket.Conn, user *options.WebSocketUser) *WebsocketInfo {
-	return &WebsocketInfo{
+func newWebsocketInfo(conn *websocket.Conn, user *options.WebSocketUser, request *http.Request) *WebsocketInfo {
+	info := &WebsocketInfo{
 		user: user,
 		conn: conn,
 		send: make(chan websocketMessage, websocketSendQueueSize),
 		done: make(chan struct{}),
 	}
+	info.request.User = user
+	if request != nil {
+		info.request.SourceIP = websocketPeerIP(request.RemoteAddr)
+		info.request.ForwardedFor = strings.TrimSpace(request.Header.Get("X-Forwarded-For"))
+		info.request.UserAgent = strings.TrimSpace(request.UserAgent())
+	}
+	return info
+}
+
+func websocketPeerIP(remoteAddr string) string {
+	remoteAddr = strings.TrimSpace(remoteAddr)
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return strings.TrimSpace(host)
+	}
+	return remoteAddr
 }
 
 func (i *WebsocketInfo) close() {
@@ -275,7 +292,7 @@ func (d *DevWebServer) handleIPCWebSocket(c echo.Context) error {
 
 	d.LogDebug(fmt.Sprintf("WebSocket client %p connected", conn))
 
-	info := newWebsocketInfo(conn, wsUser)
+	info := newWebsocketInfo(conn, wsUser, c.Request())
 	_ = conn.SetReadDeadline(time.Now().Add(websocketPongWait))
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(websocketPongWait))
@@ -500,6 +517,15 @@ func (d *DevWebServer) GetCurrentUser() *options.WebSocketUser {
 		return v.(*WebsocketInfo).user
 	}
 	return nil
+}
+
+// GetCurrentRequestMetadata implements dispatcher.RequestMetadataProvider.
+func (d *DevWebServer) GetCurrentRequestMetadata() options.WebSocketRequestMetadata {
+	gid := devCurGoroutineID()
+	if v, ok := connUserMap.Load(gid); ok {
+		return v.(*WebsocketInfo).request
+	}
+	return options.WebSocketRequestMetadata{}
 }
 
 func devCurGoroutineID() uint64 {

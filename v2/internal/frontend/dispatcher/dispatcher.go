@@ -18,9 +18,10 @@ type Dispatcher struct {
 	ctx                  context.Context
 	errfmt               options.ErrorFormatter
 	disablePanicRecovery bool
+	webSocketAudit       func(options.WebSocketAuditEvent)
 }
 
-func NewDispatcher(ctx context.Context, log *logger.Logger, bindings *binding.Bindings, events frontend.Events, errfmt options.ErrorFormatter, disablePanicRecovery bool) *Dispatcher {
+func NewDispatcher(ctx context.Context, log *logger.Logger, bindings *binding.Bindings, events frontend.Events, errfmt options.ErrorFormatter, disablePanicRecovery bool, webSocketAudit func(options.WebSocketAuditEvent)) *Dispatcher {
 	return &Dispatcher{
 		log:                  log,
 		bindings:             bindings,
@@ -29,7 +30,27 @@ func NewDispatcher(ctx context.Context, log *logger.Logger, bindings *binding.Bi
 		ctx:                  ctx,
 		errfmt:               errfmt,
 		disablePanicRecovery: disablePanicRecovery,
+		webSocketAudit:       webSocketAudit,
 	}
+}
+
+type RequestMetadataProvider interface {
+	GetCurrentRequestMetadata() options.WebSocketRequestMetadata
+}
+
+func (d *Dispatcher) emitWebSocketAudit(sender frontend.Frontend, event options.WebSocketAuditEvent) {
+	if d.webSocketAudit == nil {
+		return
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			d.log.Error("websocket audit handler panic: %v", recovered)
+		}
+	}()
+	if provider, ok := sender.(RequestMetadataProvider); ok {
+		event.Request = provider.GetCurrentRequestMetadata()
+	}
+	d.webSocketAudit(event)
 }
 
 func (d *Dispatcher) ProcessMessage(message string, sender frontend.Frontend) (_ string, err error) {

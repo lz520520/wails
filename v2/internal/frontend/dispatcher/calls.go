@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/wailsapp/wails/v2/internal/frontend"
+	"github.com/wailsapp/wails/v2/pkg/options"
 )
 
 type callMessage struct {
@@ -21,6 +23,32 @@ func (d *Dispatcher) processCallMessage(message string, sender frontend.Frontend
 		return "", err
 	}
 
+	startedAt := time.Now()
+	var auditResult interface{}
+	var auditErr error
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			d.emitWebSocketAudit(sender, options.WebSocketAuditEvent{
+				Timestamp:  startedAt,
+				Duration:   time.Since(startedAt),
+				Method:     payload.Name,
+				Arguments:  payload.Args,
+				CallbackID: payload.CallbackID,
+				Err:        fmt.Errorf("panic: %v", recovered),
+			})
+			panic(recovered)
+		}
+		d.emitWebSocketAudit(sender, options.WebSocketAuditEvent{
+			Timestamp:  startedAt,
+			Duration:   time.Since(startedAt),
+			Method:     payload.Name,
+			Arguments:  payload.Args,
+			CallbackID: payload.CallbackID,
+			Result:     auditResult,
+			Err:        auditErr,
+		})
+	}()
+
 	var result interface{}
 
 	// Handle different calls
@@ -33,16 +61,20 @@ func (d *Dispatcher) processCallMessage(message string, sender frontend.Frontend
 
 		// Check we have it
 		if registeredMethod == nil {
-			return "", fmt.Errorf("method '%s' not registered", payload.Name)
+			auditErr = fmt.Errorf("method '%s' not registered", payload.Name)
+			return "", auditErr
 		}
 
 		args, err2 := registeredMethod.ParseArgs(payload.Args)
 		if err2 != nil {
 			errmsg := fmt.Errorf("error parsing arguments: %s", err2.Error())
+			auditErr = errmsg
 			result, _ := d.NewErrorCallback(errmsg.Error(), payload.CallbackID)
 			return result, errmsg
 		}
 		result, err = registeredMethod.Call(args)
+		auditResult = result
+		auditErr = err
 	}
 
 	callbackMessage := &CallbackMessage{

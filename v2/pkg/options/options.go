@@ -2,12 +2,14 @@ package options
 
 import (
 	"context"
+	"encoding/json"
 	"html"
 	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/linux"
@@ -36,10 +38,37 @@ type WebSocketUser struct {
 	Username string
 }
 
+// WebSocketRequestMetadata contains connection metadata for the WebSocket
+// request that is currently being dispatched. SourceIP is always derived from
+// the TCP peer. ForwardedFor is retained separately so applications can audit
+// proxy headers without treating an untrusted header as the peer identity.
+type WebSocketRequestMetadata struct {
+	SourceIP     string
+	ForwardedFor string
+	UserAgent    string
+	User         *WebSocketUser
+}
+
+// WebSocketAuditEvent describes one bound Go method invocation received over
+// the Wails WebSocket transport. Arguments remain raw JSON so the application
+// can apply its own redaction policy before persistence. Result is supplied for
+// status/correlation extraction and must not be persisted without filtering.
+type WebSocketAuditEvent struct {
+	Timestamp  time.Time
+	Duration   time.Duration
+	Method     string
+	Arguments  []json.RawMessage
+	CallbackID string
+	Result     interface{}
+	Err        error
+	Request    WebSocketRequestMetadata
+}
+
 type WebSocket struct {
-	Server      *http.Server
-	WsOnly      bool
-	AuthHandler func(token string) (*WebSocketUser, error) // WebSocket 连接认证回调
+	Server       *http.Server
+	WsOnly       bool
+	AuthHandler  func(token string) (*WebSocketUser, error) // WebSocket 连接认证回调
+	AuditHandler func(event WebSocketAuditEvent)            // WebSocket 绑定方法审计回调
 }
 
 // GetRequestUser 全局函数变量，由 dispatcher 包的 init() 注册，Level6 通过此函数获取当前请求用户

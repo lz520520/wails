@@ -3,8 +3,10 @@ package dispatcher
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/wailsapp/wails/v2/internal/frontend"
+	"github.com/wailsapp/wails/v2/pkg/options"
 )
 
 type secureCallMessage struct {
@@ -24,19 +26,52 @@ func (d *Dispatcher) processSecureCallMessage(message string, sender frontend.Fr
 
 	// Lookup method
 	registeredMethod := d.bindingsDB.GetObfuscatedMethod(payload.ID)
+	methodName := fmt.Sprintf("obfuscated:%d", payload.ID)
+	if registeredMethod != nil && registeredMethod.Path != nil {
+		methodName = registeredMethod.Path.FullName()
+	}
+	startedAt := time.Now()
+	var auditResult interface{}
+	var auditErr error
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			d.emitWebSocketAudit(sender, options.WebSocketAuditEvent{
+				Timestamp:  startedAt,
+				Duration:   time.Since(startedAt),
+				Method:     methodName,
+				Arguments:  payload.Args,
+				CallbackID: payload.CallbackID,
+				Err:        fmt.Errorf("panic: %v", recovered),
+			})
+			panic(recovered)
+		}
+		d.emitWebSocketAudit(sender, options.WebSocketAuditEvent{
+			Timestamp:  startedAt,
+			Duration:   time.Since(startedAt),
+			Method:     methodName,
+			Arguments:  payload.Args,
+			CallbackID: payload.CallbackID,
+			Result:     auditResult,
+			Err:        auditErr,
+		})
+	}()
 
 	// Check we have it
 	if registeredMethod == nil {
-		return "", fmt.Errorf("method '%d' not registered", payload.ID)
+		auditErr = fmt.Errorf("method '%d' not registered", payload.ID)
+		return "", auditErr
 	}
 
 	args, err2 := registeredMethod.ParseArgs(payload.Args)
 	if err2 != nil {
 		errmsg := fmt.Errorf("error parsing arguments: %s", err2.Error())
+		auditErr = errmsg
 		result, _ := d.NewErrorCallback(errmsg.Error(), payload.CallbackID)
 		return result, errmsg
 	}
 	result, err = registeredMethod.Call(args)
+	auditResult = result
+	auditErr = err
 
 	callbackMessage := &CallbackMessage{
 		CallbackID: payload.CallbackID,
