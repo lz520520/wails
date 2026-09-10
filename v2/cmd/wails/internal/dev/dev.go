@@ -333,7 +333,7 @@ func restartApp(buildOptions *build.Options, debugBinaryProcess *process.Process
 // doWatcherLoop is the main watch loop that runs while dev is active
 func doWatcherLoop(cwd string, reloadDirs string, buildOptions *build.Options, debugBinaryProcess *process.Process, f *flags.Dev, exitCodeChannel chan int, quitChannel chan os.Signal, devServerURL *url.URL, legacyUseDevServerInsteadofCustomScheme bool) (*process.Process, error) {
 	// create the project files watcher
-	watcher, err := initialiseWatcher(cwd, reloadDirs)
+	watcher, ignoreMatcher, err := initialiseWatcher(cwd, reloadDirs)
 	if err != nil {
 		logutils.LogRed("Unable to create filesystem watcher. Reloads will not occur.")
 		return nil, err
@@ -436,8 +436,9 @@ func doWatcherLoop(cwd string, reloadDirs string, buildOptions *build.Options, d
 			if item.Op&fsnotify.Create == fsnotify.Create {
 				// If this is a folder, add it to our watch list
 				if fs.DirExists(item.Name) {
-					// node_modules is BANNED!
-					if !strings.Contains(item.Name, "node_modules") {
+					// Apply the same project-relative ignore rules used by the
+					// initial scan before watching a newly created directory.
+					if !ignoreMatcher.Matches(item.Name) {
 						err := watcher.Add(item.Name)
 						if err != nil {
 							buildOptions.Logger.Fatal("%s", err.Error())

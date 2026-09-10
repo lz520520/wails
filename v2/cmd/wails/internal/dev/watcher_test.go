@@ -13,6 +13,12 @@ import (
 )
 
 func Test_processDirectories(t *testing.T) {
+	cwd := t.TempDir()
+	absolutePaths := func(paths []string) []string {
+		return lo.Map(paths, func(path string, _ int) string {
+			return filepath.Join(cwd, filepath.FromSlash(path))
+		})
+	}
 	tests := []struct {
 		name       string
 		dirs       []string
@@ -52,9 +58,35 @@ func Test_processDirectories(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := processDirectories(tt.dirs, tt.ignoreDirs)
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("processDirectories() got = %v, want %v", got, tt.want)
+			got := processDirectories(absolutePaths(tt.dirs), newDirectoryIgnoreMatcher(cwd, tt.ignoreDirs))
+			want := absolutePaths(tt.want)
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("processDirectories() got = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestDirectoryIgnoreMatcherUsesProjectRelativePaths(t *testing.T) {
+	cwd := t.TempDir()
+	matcher := newDirectoryIgnoreMatcher(cwd, []string{"/tmpout", "/sub_config", ".*"})
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "project root", path: cwd, want: false},
+		{name: "root runtime directory", path: filepath.Join(cwd, "tmpout"), want: true},
+		{name: "runtime staging directory", path: filepath.Join(cwd, "tmpout", "compile_server", ".stage-digest"), want: true},
+		{name: "root configuration directory", path: filepath.Join(cwd, "sub_config"), want: true},
+		{name: "anchored rule does not match nested directory", path: filepath.Join(cwd, "nested", "tmpout"), want: false},
+		{name: "dot directory", path: filepath.Join(cwd, ".generated"), want: true},
+		{name: "regular directory", path: filepath.Join(cwd, "modules"), want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matcher.Matches(tt.path); got != tt.want {
+				t.Fatalf("Matches(%q) = %v, want %v", tt.path, got, tt.want)
 			}
 		})
 	}
@@ -74,12 +106,12 @@ func Test_GetIgnoreDirs(t *testing.T) {
 		{
 			name:  "Should have defaults",
 			files: []string{},
-			want:  []string{"testdir/build/*", ".*", "node_modules"},
+			want:  []string{"build/*", ".*", "node_modules"},
 		},
 		{
 			name:  "Should ignore dotFiles",
 			files: []string{".test1", ".wailsignore"},
-			want:  []string{"testdir/build/*", ".*", "node_modules"},
+			want:  []string{"build/*", ".*", "node_modules"},
 		},
 	}
 	for _, tt := range tests {

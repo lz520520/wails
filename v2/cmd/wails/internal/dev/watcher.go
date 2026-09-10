@@ -18,14 +18,14 @@ type Watcher interface {
 }
 
 // initialiseWatcher creates the project directory watcher that will trigger recompile
-func initialiseWatcher(cwd, reloadDirs string) (*fsnotify.Watcher, error) {
+func initialiseWatcher(cwd, reloadDirs string) (*fsnotify.Watcher, *directoryIgnoreMatcher, error) {
 	// Ignore dot files, node_modules and build directories by default
-	ignoreDirs := getIgnoreDirs(cwd)
+	ignoreMatcher := newDirectoryIgnoreMatcher(cwd, getIgnoreDirs(cwd))
 
 	// Get all subdirectories
 	dirs, err := fs.GetSubdirectories(cwd)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	customDirs := dirs.AsSlice()
@@ -33,27 +33,28 @@ func initialiseWatcher(cwd, reloadDirs string) (*fsnotify.Watcher, error) {
 	for _, dir := range seperatedDirs {
 		customSub, err := fs.GetSubdirectories(filepath.Join(cwd, dir))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		customDirs = append(customDirs, customSub.AsSlice()...)
 	}
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	for _, dir := range processDirectories(customDirs, ignoreDirs) {
+	for _, dir := range processDirectories(customDirs, ignoreMatcher) {
 		err := watcher.Add(dir)
 		if err != nil {
-			return nil, err
+			_ = watcher.Close()
+			return nil, nil, err
 		}
 	}
-	return watcher, nil
+	return watcher, ignoreMatcher, nil
 }
 
 func getIgnoreDirs(cwd string) []string {
-	ignoreDirs := []string{filepath.Join(cwd, "build/*"), ".*", "node_modules"}
+	ignoreDirs := []string{"build/*", ".*", "node_modules"}
 	baseDir := filepath.Base(cwd)
 	// Read .gitignore into ignoreDirs
 	f, err := os.Open(filepath.Join(cwd, ".gitignore"))
@@ -70,9 +71,36 @@ func getIgnoreDirs(cwd string) []string {
 	return lo.Uniq(ignoreDirs)
 }
 
-func processDirectories(dirs []string, ignoreDirs []string) []string {
-	ignorer := gitignore.CompileIgnoreLines(ignoreDirs...)
+type directoryIgnoreMatcher struct {
+	root    string
+	ignorer *gitignore.GitIgnore
+}
+
+func newDirectoryIgnoreMatcher(cwd string, ignoreDirs []string) *directoryIgnoreMatcher {
+	root, err := filepath.Abs(cwd)
+	if err != nil {
+		root = filepath.Clean(cwd)
+	}
+	return &directoryIgnoreMatcher{
+		root:    root,
+		ignorer: gitignore.CompileIgnoreLines(ignoreDirs...),
+	}
+}
+
+func (matcher *directoryIgnoreMatcher) Matches(dir string) bool {
+	absolute, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	relative, err := filepath.Rel(matcher.root, absolute)
+	if err != nil || relative == "." {
+		return false
+	}
+	return matcher.ignorer.MatchesPath(filepath.ToSlash(relative))
+}
+
+func processDirectories(dirs []string, ignoreMatcher *directoryIgnoreMatcher) []string {
 	return lo.Filter(dirs, func(dir string, _ int) bool {
-		return !ignorer.MatchesPath(dir)
+		return !ignoreMatcher.Matches(dir)
 	})
 }
