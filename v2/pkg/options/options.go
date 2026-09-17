@@ -42,10 +42,12 @@ type WebSocketUser struct {
 // request that is currently being dispatched. SourceIP is always derived from
 // the TCP peer. ForwardedFor is retained separately so applications can audit
 // proxy headers without treating an untrusted header as the peer identity.
+// BrowserID is supplied by the client and must not be treated as an identity.
 type WebSocketRequestMetadata struct {
 	SourceIP     string
 	ForwardedFor string
 	UserAgent    string
+	BrowserID    string
 	User         *WebSocketUser
 }
 

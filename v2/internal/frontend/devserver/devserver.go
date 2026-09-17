@@ -82,6 +82,10 @@ func newWebsocketInfo(conn *websocket.Conn, user *options.WebSocketUser, request
 		info.request.SourceIP = websocketPeerIP(request.RemoteAddr)
 		info.request.ForwardedFor = strings.TrimSpace(request.Header.Get("X-Forwarded-For"))
 		info.request.UserAgent = strings.TrimSpace(request.UserAgent())
+		browserID := request.URL.Query().Get("browser_id")
+		if len(browserID) <= 64 {
+			info.request.BrowserID = browserID
+		}
 	}
 	return info
 }

@@ -12,6 +12,7 @@ The electron alternative for Go
 import {log} from "./log";
 import Overlay from "./Overlay.svelte";
 import {hideOverlay, showOverlay} from "./store";
+import {getBrowserID} from "./browser_id";
 
 let components = {};
 
@@ -132,7 +133,16 @@ function _connect() {
     if (websocket == null) {
         get_host();
         const token = localStorage.getItem('token') || '';
-        const query = token ? '?token=' + encodeURIComponent(token) : '';
+        const params = new URLSearchParams();
+        if (token) {
+            params.set('token', token);
+        }
+        const browserID = getBrowserID();
+        if (browserID) {
+            params.set('browser_id', browserID);
+        }
+        const queryString = params.toString();
+        const query = queryString ? '?' + queryString : '';
         websocket = new WebSocket((protocol.startsWith("https") ? "wss://" : "ws://") + host + "/wails/ipc" + query);
         websocket.onopen = handleConnect;
         websocket.onerror = function (e) {

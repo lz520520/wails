@@ -89,7 +89,7 @@ func TestConnectionControlMessagesUpdateEventFilterSynchronously(t *testing.T) {
 }
 
 func TestWebsocketInfoKeepsPeerAndForwardedAddressesSeparate(t *testing.T) {
-	request := httptest.NewRequest("GET", "http://127.0.0.1/wails/ipc", nil)
+	request := httptest.NewRequest("GET", "http://127.0.0.1/wails/ipc?browser_id=6f51fdd7-a28e-4b17-a158-61d1f8d2f13a", nil)
 	request.RemoteAddr = "192.0.2.25:54321"
 	request.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.2")
 	request.Header.Set("User-Agent", "audit-test")
@@ -105,6 +105,9 @@ func TestWebsocketInfoKeepsPeerAndForwardedAddressesSeparate(t *testing.T) {
 	}
 	if info.request.User != user || info.request.UserAgent != "audit-test" {
 		t.Fatalf("unexpected request metadata: %+v", info.request)
+	}
+	if info.request.BrowserID != "6f51fdd7-a28e-4b17-a158-61d1f8d2f13a" {
+		t.Fatalf("browser ID = %q", info.request.BrowserID)
 	}
 }
 
